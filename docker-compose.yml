@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  reviews-db:
+    image: postgres:15
+    container_name: reviews-db
+    environment:
+      POSTGRES_DB: reviews_db
+      POSTGRES_USER: reviews_user
+      POSTGRES_PASSWORD: reviews_password
+    ports:
+      - "5436:5432"
+    volumes:
+      - reviews_postgres_data:/var/lib/postgresql/data
+    networks:
+      - reviews-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reviews_user -d reviews_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  reviews-api:
+    build: .
+    container_name: reviews-api
+    environment:
+      DATABASE_URL: postgresql://reviews_user:reviews_password@reviews-db:5432/reviews_db
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+    ports:
+      - "8004:8000"
+    depends_on:
+      reviews-db:
+        condition: service_healthy
+    networks:
+      - reviews-network
+    restart: unless-stopped
+    volumes:
+      - ./output:/app/output
+      - ./data:/app/data
+
+volumes:
+  reviews_postgres_data:
+
+networks:
+  reviews-network:
+    driver: bridge

@@ -38,6 +38,8 @@ class ReviewResponse(BaseModel):
     is_verified: bool
     likes_count: int
     comments_count: int
+    photos_count: int = 0
+    photos_urls: List[str] = []
     
     class Config:
         from_attributes = True

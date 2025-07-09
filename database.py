@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Integer, Float, Boolean, DateTime, Text, Index
+from sqlalchemy import create_engine, Column, String, Integer, Float, Boolean, DateTime, Text, Index, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -48,6 +48,8 @@ class Review(Base):
     is_verified = Column(Boolean, default=False)
     likes_count = Column(Integer, default=0)
     comments_count = Column(Integer, default=0)
+    photos_count = Column(Integer, default=0)
+    photos_urls = Column(JSON)  # Массив URL фотографий
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

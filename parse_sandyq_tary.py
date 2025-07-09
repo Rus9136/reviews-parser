@@ -14,12 +14,25 @@ def load_branches_from_csv(csv_path):
     branches = []
     
     try:
-        with open(csv_path, 'r', encoding='utf-8') as file:
+        with open(csv_path, 'r', encoding='utf-8-sig') as file:  # utf-8-sig для обработки BOM
             reader = csv.DictReader(file, delimiter=';')
             
             for row in reader:
-                name = row.get('Название точки', '').strip()
-                id_2gis = row.get('ИД 2gist', '').strip()
+                # Ищем заголовки с учетом возможных кавычек
+                name_key = None
+                id_key = None
+                
+                for key in row.keys():
+                    if 'Название точки' in key:
+                        name_key = key
+                    elif 'ИД 2gist' in key:
+                        id_key = key
+                
+                if not name_key or not id_key:
+                    continue
+                    
+                name = row.get(name_key, '').strip()
+                id_2gis = row.get(id_key, '').strip()
                 
                 # Проверяем валидность ID (исключаем пустые, "null", "NULL")
                 if name and id_2gis and id_2gis.lower() not in ['', 'null']:

@@ -55,6 +55,17 @@ class TwoGISReviewsParser:
                 break
                 
             for review in reviews:
+                # Обработка фотографий
+                photos = review.get('photos', [])
+                photos_urls = []
+                
+                for photo in photos:
+                    if photo.get('preview_urls'):
+                        # Берем оригинальный URL или самый большой размер
+                        photo_url = photo['preview_urls'].get('url') or photo['preview_urls'].get('1920x')
+                        if photo_url:
+                            photos_urls.append(photo_url)
+                
                 parsed_review = {
                     'branch_id': branch_id,
                     'branch_name': branch_name,
@@ -66,7 +77,9 @@ class TwoGISReviewsParser:
                     'date_edited': review.get('date_edited'),
                     'is_verified': review.get('is_verified', False),
                     'likes_count': review.get('likes_count', 0),
-                    'comments_count': review.get('comments_count', 0)
+                    'comments_count': review.get('comments_count', 0),
+                    'photos_count': len(photos),
+                    'photos_urls': photos_urls
                 }
                 all_reviews.append(parsed_review)
             

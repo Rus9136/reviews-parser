@@ -20,6 +20,7 @@ from sqlalchemy import and_, or_, desc
 from dotenv import load_dotenv
 
 from database import SessionLocal, TelegramUser, TelegramSubscription, TelegramUserState, Review, Branch
+from telegram_calendar import create_calendar, process_calendar_selection
 
 # Настройка логирования
 logging.basicConfig(
@@ -350,10 +351,13 @@ async def show_reviews_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             save_user_state(db, user_id, state_data)
             
+            # Создать календарь для выбора даты начала
+            today = datetime.now()
+            calendar = create_calendar(today.year, today.month)
             await update.callback_query.edit_message_text(
                 f"📅 Выбран филиал: {branch_name}\n\n"
-                f"Введите дату начала периода в формате ДД.ММ.ГГГГ\n"
-                f"Например: 01.07.2025"
+                f"Выберите дату начала периода:",
+                reply_markup=calendar
             )
             
         else:
@@ -388,6 +392,94 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     try:
         data = query.data
+        
+        # Обработка календаря
+        if data.startswith('calendar_'):
+            action, year, month, day = process_calendar_selection(data)
+            
+            if action == 'ignore':
+                # Игнорировать нажатие
+                return
+            
+            user_state = get_user_state(db, user_id)
+            if not user_state or user_state.get('action') != 'reviews':
+                await query.edit_message_text("❌ Сессия истекла. Используйте /start для начала.")
+                return
+            
+            if action in ['prev', 'next']:
+                # Переключение месяца
+                if action == 'prev':
+                    month -= 1
+                    if month < 1:
+                        month = 12
+                        year -= 1
+                else:  # next
+                    month += 1
+                    if month > 12:
+                        month = 1
+                        year += 1
+                
+                calendar = create_calendar(year, month)
+                branch_name = user_state.get('selected_branch_name', '')
+                
+                if user_state.get('step') == 'date_from':
+                    await query.edit_message_text(
+                        f"📅 Выбран филиал: {branch_name}\n\n"
+                        f"Выберите дату начала периода:",
+                        reply_markup=calendar
+                    )
+                elif user_state.get('step') == 'date_to':
+                    date_from = datetime.fromisoformat(user_state['date_from']).date()
+                    await query.edit_message_text(
+                        f"📅 Дата начала: {date_from.strftime('%d.%m.%Y')}\n\n"
+                        f"Теперь выберите дату окончания периода:",
+                        reply_markup=calendar
+                    )
+                return
+            
+            elif action == 'day':
+                # День выбран
+                selected_date = datetime(year, month, day).date()
+                
+                if user_state.get('step') == 'date_from':
+                    # Сохранить дату начала
+                    user_state['date_from'] = selected_date.isoformat()
+                    user_state['step'] = 'date_to'
+                    save_user_state(db, user_id, user_state)
+                    
+                    # Показать календарь для выбора даты окончания
+                    calendar = create_calendar(selected_date.year, selected_date.month)
+                    await query.edit_message_text(
+                        f"📅 Дата начала: {selected_date.strftime('%d.%m.%Y')}\n\n"
+                        f"Теперь выберите дату окончания периода:",
+                        reply_markup=calendar
+                    )
+                    return
+                    
+                elif user_state.get('step') == 'date_to':
+                    # Проверить и сохранить дату окончания
+                    date_from = datetime.fromisoformat(user_state['date_from']).date()
+                    date_to = selected_date
+                    
+                    if date_to < date_from:
+                        # Показать ошибку и календарь заново
+                        calendar = create_calendar(year, month)
+                        await query.edit_message_text(
+                            f"❌ Дата окончания не может быть раньше даты начала!\n\n"
+                            f"📅 Дата начала: {date_from.strftime('%d.%m.%Y')}\n\n"
+                            f"Выберите дату окончания периода:",
+                            reply_markup=calendar
+                        )
+                        return
+                    
+                    user_state['date_to'] = date_to.isoformat()
+                    user_state['step'] = 'show_reviews'
+                    user_state['offset'] = 0
+                    save_user_state(db, user_id, user_state)
+                    
+                    # Показать отзывы
+                    await show_reviews_for_period(query, context)
+                    return
         
         # Обработка команд главного меню
         if data == "main_menu":
@@ -636,10 +728,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 }
                 save_user_state(db, user_id, state_data)
                 
+                # Создать календарь для выбора даты начала
+                today = datetime.now()
+                calendar = create_calendar(today.year, today.month)
                 await query.edit_message_text(
                     f"📅 Выбран филиал: {branch_name}\n\n"
-                    f"Введите дату начала периода в формате ДД.ММ.ГГГГ\n"
-                    f"Например: 01.07.2025"
+                    f"Выберите дату начала периода:",
+                    reply_markup=calendar
                 )
             else:
                 await query.edit_message_text(
@@ -778,51 +873,16 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not user_state:
             return
     
-        if user_state.get('action') == 'reviews':
-            if user_state.get('step') == 'date_from':
-                # Обработать дату начала
-                try:
-                    date_from = datetime.strptime(text, "%d.%m.%Y").date()
-                    user_state['date_from'] = date_from.isoformat()
-                    user_state['step'] = 'date_to'
-                    save_user_state(db, user_id, user_state)
-                    
-                    await update.message.reply_text(
-                        f"📅 Дата начала: {date_from.strftime('%d.%m.%Y')}\n\n"
-                        f"Теперь введите дату окончания периода в формате ДД.ММ.ГГГГ\n"
-                        f"Например: 07.07.2025"
-                    )
-                    
-                except ValueError:
-                    await update.message.reply_text(
-                        "❌ Неправильный формат даты. Используйте формат ДД.ММ.ГГГГ\n"
-                        "Например: 01.07.2025"
-                    )
-            
-            elif user_state.get('step') == 'date_to':
-                # Обработать дату окончания и показать отзывы
-                try:
-                    date_to = datetime.strptime(text, "%d.%m.%Y").date()
-                    date_from = datetime.fromisoformat(user_state['date_from']).date()
-                    
-                    if date_to < date_from:
-                        await update.message.reply_text(
-                            "❌ Дата окончания не может быть раньше даты начала. Попробуйте снова."
-                        )
-                        return
-                    
-                    user_state['date_to'] = date_to.isoformat()
-                    user_state['step'] = 'show_reviews'
-                    user_state['offset'] = 0
-                    save_user_state(db, user_id, user_state)
-                    
-                    await show_reviews_for_period(update, context)
-                    
-                except ValueError:
-                    await update.message.reply_text(
-                        "❌ Неправильный формат даты. Используйте формат ДД.ММ.ГГГГ\n"
-                        "Например: 07.07.2025"
-                    )
+        # Обработка дат теперь через календарь, а не текстовые сообщения
+        if user_state.get('action') == 'reviews' and (user_state.get('step') == 'date_from' or user_state.get('step') == 'date_to'):
+            # Игнорировать текстовые сообщения при выборе дат
+            await update.message.reply_text(
+                "📅 Пожалуйста, используйте календарь для выбора даты.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+                ])
+            )
+            return
     
     finally:
         db.close()

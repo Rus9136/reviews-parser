@@ -8,7 +8,9 @@ import os
 class TwoGISReviewsParser:
     def __init__(self):
         self.base_url = "https://public-api.reviews.2gis.com/2.0/branches/{}/reviews"
-        self.api_key = "6e7e1929-4ea9-4a5d-8c05-d601860389bd"
+        self.api_key = os.getenv("PARSER_API_KEY")
+        if not self.api_key:
+            raise ValueError("PARSER_API_KEY не найден в переменных окружения")
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }

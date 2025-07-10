@@ -7,6 +7,8 @@ from typing import List, Optional
 from pydantic import BaseModel
 import database
 from database import Review, Branch, get_db
+from cache_manager import get_cache_manager
+import os
 
 app = FastAPI(
     title="2GIS Reviews API",
@@ -17,11 +19,12 @@ app = FastAPI(
 )
 
 # CORS middleware
+allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "https://reviews.aqniet.site").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -96,15 +99,40 @@ async def health_check(db: Session = Depends(get_db)):
         reviews_count = db.query(Review).count()
         branches_count = db.query(Branch).count()
         
+        # Test cache connection
+        cache = get_cache_manager()
+        cache_status = "connected" if cache.is_available() else "disconnected"
+        
         return {
             "status": "healthy",
             "database": "connected",
+            "cache": cache_status,
             "reviews_count": reviews_count,
             "branches_count": branches_count,
             "timestamp": datetime.utcnow()
         }
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+@app.get("/api/v1/cache/stats", tags=["Cache"])
+async def get_cache_stats():
+    """Get cache statistics"""
+    cache = get_cache_manager()
+    return cache.get_cache_stats()
+
+@app.post("/api/v1/cache/clear", tags=["Cache"])
+async def clear_cache():
+    """Clear all cache"""
+    cache = get_cache_manager()
+    cache.invalidate_all_cache()
+    return {"message": "Cache cleared successfully"}
+
+@app.post("/api/v1/cache/clear/{branch_id}", tags=["Cache"])
+async def clear_branch_cache(branch_id: str):
+    """Clear cache for specific branch"""
+    cache = get_cache_manager()
+    cache.invalidate_branch_cache(branch_id)
+    return {"message": f"Cache cleared for branch {branch_id}"}
 
 @app.get("/api/v1/branches", response_model=List[BranchResponse], tags=["Branches"])
 async def get_branches(
@@ -114,6 +142,14 @@ async def get_branches(
     limit: int = Query(100, ge=1, le=1000)
 ):
     """Get list of all branches with statistics"""
+    cache = get_cache_manager()
+    
+    # Пробуем получить из кэша
+    if not city and skip == 0 and limit == 100:
+        cached_branches = cache.get_branches_list_cache()
+        if cached_branches:
+            return cached_branches
+    
     query = db.query(
         Branch.branch_id,
         Branch.branch_name,
@@ -135,7 +171,7 @@ async def get_branches(
     
     branches = query.offset(skip).limit(limit).all()
     
-    return [
+    result = [
         BranchResponse(
             branch_id=b.branch_id,
             branch_name=b.branch_name,
@@ -146,6 +182,12 @@ async def get_branches(
         )
         for b in branches
     ]
+    
+    # Кэшируем только стандартные запросы
+    if not city and skip == 0 and limit == 100:
+        cache.set_branches_list_cache([r.dict() for r in result])
+    
+    return result
 
 @app.get("/api/v1/branches/{branch_id}/stats", response_model=BranchStats, tags=["Branches"])
 async def get_branch_stats(branch_id: str, db: Session = Depends(get_db)):

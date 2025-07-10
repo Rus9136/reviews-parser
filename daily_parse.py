@@ -254,6 +254,18 @@ def main():
             for r in branches_with_new:
                 logger.info(f"  - {r['branch_name']}: +{r['new_reviews']} отзывов")
         
+        # Отправка Telegram уведомлений если есть новые отзывы
+        if total_new_reviews > 0:
+            logger.info("\n📱 Добавление уведомлений в очередь...")
+            try:
+                from telegram_notifications_queue import send_notifications_for_new_reviews
+                send_notifications_for_new_reviews()
+                logger.info("✅ Telegram уведомления добавлены в очередь")
+            except Exception as e:
+                logger.error(f"❌ Ошибка при добавлении уведомлений в очередь: {e}")
+        else:
+            logger.info("\n📱 Новых отзывов нет, уведомления не требуются")
+        
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
         session.rollback()

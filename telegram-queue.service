@@ -1,0 +1,23 @@
+[Unit]
+Description=Telegram Queue Worker (Celery)
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/projects/reviews-parser
+Environment=PATH=/root/projects/reviews-parser/venv/bin
+ExecStart=/root/projects/reviews-parser/venv/bin/celery -A telegram_queue worker --loglevel=info --queues=telegram_notifications
+Restart=always
+RestartSec=10
+
+# Настройки для graceful shutdown
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Логирование
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

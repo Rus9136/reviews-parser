@@ -282,6 +282,23 @@ def get_branch_by_name(branch_name: str) -> Optional[Dict[str, str]]:
     return None
 
 
+def get_branch_by_iiko_id(iiko_id: str) -> Optional[Dict[str, str]]:
+    """
+    Найти филиал по ID iiko
+    
+    Args:
+        iiko_id: ID филиала в iiko
+        
+    Returns:
+        Данные филиала или None если не найден
+    """
+    branches = load_branches_from_csv()
+    for branch in branches:
+        if branch.get('id_iiko') == iiko_id:
+            return branch
+    return None
+
+
 if __name__ == "__main__":
     # Тестирование модуля
     logging.basicConfig(level=logging.INFO)

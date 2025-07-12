@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import database
 from database import Review, Branch, get_db
 from cache_manager import get_cache_manager
+from branches_loader import get_branch_by_iiko_id
 import os
 
 app = FastAPI(
@@ -378,6 +379,71 @@ async def get_recent_activity(
         "total_reviews": len(recent_reviews),
         "reviews_by_date": reviews_by_date
     }
+
+@app.get("/api/v1/{branch_id}/{count}", response_model=List[ReviewResponse], tags=["Reviews"])
+async def get_latest_reviews_by_branch(
+    branch_id: str,
+    count: int,
+    db: Session = Depends(get_db)
+):
+    """Get latest reviews for a specific branch"""
+    # Валидация параметра count
+    if count < 1 or count > 1000:
+        raise HTTPException(status_code=400, detail="Count must be between 1 and 1000")
+    
+    # Проверяем существование филиала
+    branch = db.query(Branch).filter(Branch.branch_id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    
+    # Получаем последние отзывы, отсортированные по дате (от новых к старым)
+    reviews = db.query(Review).filter(
+        Review.branch_id == branch_id
+    ).order_by(desc(Review.date_created)).limit(count).all()
+    
+    return reviews
+
+@app.get("/api/v1/by-iiko/{id_iiko}/{count}", response_model=List[ReviewResponse], tags=["Reviews"])
+async def get_latest_reviews_by_iiko_id(
+    id_iiko: str,
+    count: int,
+    db: Session = Depends(get_db)
+):
+    """Get latest reviews for a specific branch by iiko ID"""
+    # Валидация параметра count
+    if count < 1 or count > 1000:
+        raise HTTPException(status_code=400, detail="Count must be between 1 and 1000")
+    
+    # Ищем филиал по id_iiko в Google Sheets
+    branch_data = get_branch_by_iiko_id(id_iiko)
+    if not branch_data:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Branch with iiko ID '{id_iiko}' not found in branches registry"
+        )
+    
+    # Получаем branch_id (ID 2GIS) из найденного филиала
+    branch_id = branch_data.get('id_2gis')
+    if not branch_id:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Branch '{branch_data.get('name')}' has no 2GIS ID configured"
+        )
+    
+    # Проверяем существование филиала в базе данных
+    branch = db.query(Branch).filter(Branch.branch_id == branch_id).first()
+    if not branch:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Branch '{branch_data.get('name')}' (2GIS ID: {branch_id}) not found in reviews database"
+        )
+    
+    # Получаем последние отзывы, отсортированные по дате (от новых к старым)
+    reviews = db.query(Review).filter(
+        Review.branch_id == branch_id
+    ).order_by(desc(Review.date_created)).limit(count).all()
+    
+    return reviews
 
 if __name__ == "__main__":
     import uvicorn

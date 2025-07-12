@@ -80,16 +80,16 @@ def send_review_notification(review: Review, high_priority: bool = False):
         for subscription in subscriptions:
             try:
                 task_id = queue_notification(
-                    chat_id=subscription.chat_id,
+                    chat_id=subscription.user_id,
                     message=message,
                     photos=photos,
                     high_priority=high_priority
                 )
                 sent_count += 1
-                logger.info(f"Уведомление добавлено в очередь для {subscription.chat_id}, task: {task_id}")
+                logger.info(f"Уведомление добавлено в очередь для {subscription.user_id}, task: {task_id}")
                 
             except Exception as e:
-                logger.error(f"Ошибка при добавлении уведомления в очередь для {subscription.chat_id}: {str(e)}")
+                logger.error(f"Ошибка при добавлении уведомления в очередь для {subscription.user_id}: {str(e)}")
         
         logger.info(f"Добавлено {sent_count} уведомлений в очередь для отзыва {review.review_id}")
         
@@ -137,7 +137,7 @@ def send_system_notification(message: str, high_priority: bool = True):
     db = get_db()
     try:
         # Получаем всех пользователей
-        subscriptions = db.query(TelegramSubscription).distinct(TelegramSubscription.chat_id).all()
+        subscriptions = db.query(TelegramSubscription).distinct(TelegramSubscription.user_id).all()
         
         if not subscriptions:
             logger.info("Нет пользователей для отправки системного уведомления")
@@ -145,23 +145,23 @@ def send_system_notification(message: str, high_priority: bool = True):
         
         # Отправляем уведомления
         sent_count = 0
-        chat_ids = set()
+        user_ids = set()
         
         for subscription in subscriptions:
-            if subscription.chat_id not in chat_ids:
-                chat_ids.add(subscription.chat_id)
+            if subscription.user_id not in user_ids:
+                user_ids.add(subscription.user_id)
                 try:
                     task_id = queue_notification(
-                        chat_id=subscription.chat_id,
+                        chat_id=subscription.user_id,
                         message=f"🔔 Системное уведомление:\n{message}",
                         photos=None,
                         high_priority=high_priority
                     )
                     sent_count += 1
-                    logger.info(f"Системное уведомление добавлено в очередь для {subscription.chat_id}, task: {task_id}")
+                    logger.info(f"Системное уведомление добавлено в очередь для {subscription.user_id}, task: {task_id}")
                     
                 except Exception as e:
-                    logger.error(f"Ошибка при добавлении системного уведомления в очередь для {subscription.chat_id}: {str(e)}")
+                    logger.error(f"Ошибка при добавлении системного уведомления в очередь для {subscription.user_id}: {str(e)}")
         
         logger.info(f"Добавлено {sent_count} системных уведомлений в очередь")
         

@@ -3,6 +3,7 @@
 """
 import os
 import logging
+import asyncio
 from typing import List, Optional
 from celery import Celery
 from celery.exceptions import Retry
@@ -53,24 +54,16 @@ if not BOT_TOKEN:
 
 bot = Bot(token=BOT_TOKEN)
 
-@app.task(bind=True, max_retries=3)
-def send_notification(self, chat_id: int, message: str, photos: Optional[List[str]] = None):
+async def _send_telegram_message(chat_id: int, message: str, photos: Optional[List[str]] = None):
     """
-    Отправка уведомления в Telegram
-    
-    Args:
-        chat_id: ID чата для отправки
-        message: Текст сообщения
-        photos: Список URL фотографий (опционально)
+    Асинхронная отправка сообщения в Telegram
     """
-    try:
-        logger.info(f"Отправка уведомления в чат {chat_id}")
-        
+    async with bot:
         if photos and len(photos) > 0:
             # Отправляем сообщение с фотографиями
             if len(photos) == 1:
                 # Одна фотография
-                bot.send_photo(
+                await bot.send_photo(
                     chat_id=chat_id,
                     photo=photos[0],
                     caption=message,
@@ -86,17 +79,33 @@ def send_notification(self, chat_id: int, message: str, photos: Optional[List[st
                     )
                     media_group.append(media)
                 
-                bot.send_media_group(
+                await bot.send_media_group(
                     chat_id=chat_id,
                     media=media_group
                 )
         else:
             # Отправляем только текст
-            bot.send_message(
+            await bot.send_message(
                 chat_id=chat_id,
                 text=message,
                 parse_mode='HTML'
             )
+
+@app.task(bind=True, max_retries=3)
+def send_notification(self, chat_id: int, message: str, photos: Optional[List[str]] = None):
+    """
+    Отправка уведомления в Telegram
+    
+    Args:
+        chat_id: ID чата для отправки
+        message: Текст сообщения
+        photos: Список URL фотографий (опционально)
+    """
+    try:
+        logger.info(f"Отправка уведомления в чат {chat_id}")
+        
+        # Запускаем асинхронную функцию
+        asyncio.run(_send_telegram_message(chat_id, message, photos))
         
         logger.info(f"Уведомление успешно отправлено в чат {chat_id}")
         return {"status": "success", "chat_id": chat_id}
@@ -114,7 +123,7 @@ def send_notification(self, chat_id: int, message: str, photos: Optional[List[st
     except TelegramError as e:
         # Другие ошибки Telegram
         logger.error(f"Ошибка Telegram при отправке в чат {chat_id}: {str(e)}")
-        if e.message.startswith("Forbidden"):
+        if "Forbidden" in str(e):
             # Пользователь заблокировал бота или удалил чат
             logger.error(f"Пользователь {chat_id} заблокировал бота")
             return {"status": "blocked", "chat_id": chat_id, "error": str(e)}

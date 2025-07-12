@@ -17,3 +17,22 @@ Thumbs.db
 
 # Data directory
 /data/
+
+# Environment and secrets
+.env
+*.json
+basic-zenith-465712-s5-*.json
+
+# Logs
+/logs/
+*.log
+
+# Virtual environment
+venv/
+env/
+
+# Session logs
+SESSION_LOG_*.md
+
+# Temporary files
+=*

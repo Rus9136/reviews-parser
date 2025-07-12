@@ -9,50 +9,15 @@ from datetime import datetime
 import time
 from parser import TwoGISReviewsParser
 
-def load_branches_from_csv(csv_path):
-    """Загрузка точек продаж из CSV файла"""
-    branches = []
-    
-    try:
-        with open(csv_path, 'r', encoding='utf-8-sig') as file:  # utf-8-sig для обработки BOM
-            reader = csv.DictReader(file, delimiter=';')
-            
-            for row in reader:
-                # Ищем заголовки с учетом возможных кавычек
-                name_key = None
-                id_key = None
-                
-                for key in row.keys():
-                    if 'Название точки' in key:
-                        name_key = key
-                    elif 'ИД 2gist' in key:
-                        id_key = key
-                
-                if not name_key or not id_key:
-                    continue
-                    
-                name = row.get(name_key, '').strip()
-                id_2gis = row.get(id_key, '').strip()
-                
-                # Проверяем валидность ID (исключаем пустые, "null", "NULL")
-                if name and id_2gis and id_2gis.lower() not in ['', 'null']:
-                    # Проверяем, что ID состоит из цифр
-                    if id_2gis.isdigit():
-                        branches.append({
-                            'name': name,
-                            'id_2gis': id_2gis
-                        })
-                    else:
-                        print(f"⚠️  Пропущена точка '{name}' - невалидный ID: {id_2gis}")
-                else:
-                    if name:
-                        print(f"⚠️  Пропущена точка '{name}' - отсутствует ID 2GIS")
-                    
-    except Exception as e:
-        print(f"❌ Ошибка при чтении CSV файла: {e}")
-        return []
-    
-    return branches
+# Импортируем универсальный загрузчик
+from branches_loader import load_branches_from_csv as load_branches_google
+
+def load_branches_from_csv(csv_path=None):
+    """
+    Загрузка точек продаж из Google Sheets (с fallback на CSV файл)
+    Параметр csv_path оставлен для совместимости, но игнорируется
+    """
+    return load_branches_google(csv_path)
 
 def save_summary_report(all_reviews, branches, failed_branches, timestamp):
     """Сохранение итогового отчета"""

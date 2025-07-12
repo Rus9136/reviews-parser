@@ -45,38 +45,28 @@ def get_db():
         pass
 
 def load_branches_from_csv():
-    """Загрузить филиалы из CSV файла"""
-    branches = []
-    csv_path = "data/sandyq_tary_branches.csv"
+    """Загрузить филиалы из Google Sheets (с fallback на CSV файл)"""
+    from branches_loader import load_branches_from_csv as load_branches_google
     
     try:
-        with open(csv_path, 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file, delimiter=';')
-            for row in reader:
-                # Обработка BOM и кавычек в названиях колонок
-                branch_id = None
-                branch_name = None
-                
-                for key, value in row.items():
-                    if 'ИД 2gist' in key:
-                        branch_id = value.strip() if value else ''
-                    elif 'Название точки' in key:
-                        branch_name = value.strip() if value else ''
-                
-                # Только филиалы с ID
-                if branch_id and branch_id not in ['null', 'NULL', ''] and branch_name:
-                    branches.append({
-                        'id': branch_id,
-                        'name': branch_name
-                    })
-                    
-        logger.info(f"Загружено {len(branches)} филиалов из CSV")
+        branches_data = load_branches_google()
+        # Преобразуем формат для совместимости с текущим кодом
+        branches = []
+        for branch in branches_data:
+            branches.append({
+                'id': branch['id_2gis'],
+                'name': branch['name']
+            })
+            
+        logger.info(f"Загружено {len(branches)} филиалов из Google Sheets")
         for branch in branches[:5]:  # Показать первые 5 филиалов в логах
             logger.info(f"  - {branch['name']} (ID: {branch['id']})")
+            
+        return branches
+        
     except Exception as e:
-        logger.error(f"Ошибка при загрузке филиалов из CSV: {e}")
-    
-    return branches
+        logger.error(f"Ошибка при загрузке филиалов: {e}")
+        return []
 
 def get_or_create_user(db: Session, user_id: str, user_data: dict) -> TelegramUser:
     """Получить или создать пользователя"""

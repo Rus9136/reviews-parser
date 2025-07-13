@@ -17,7 +17,10 @@ from dotenv import load_dotenv
 
 from parser import TwoGISReviewsParser
 from database import Review, Branch, ParseReport
-from parse_sandyq_tary import load_branches_from_csv
+from branches_loader import load_branches_from_csv
+from sync_branches import sync_branches_to_db
+from cache_manager import get_cache_manager
+import requests
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -178,13 +181,14 @@ def main():
     start_time = datetime.now()
     logger.info("🚀 Запуск ежедневного инкрементального парсинга отзывов")
     
-    # Загрузка списка филиалов
-    csv_path = "data/sandyq_tary_branches.csv"
-    if not os.path.exists(csv_path):
-        logger.error(f"❌ Файл {csv_path} не найден!")
+    # Синхронизация филиалов из Google Sheets
+    logger.info("🔄 Синхронизация филиалов из Google Sheets...")
+    if not sync_branches_to_db():
+        logger.error("❌ Ошибка при синхронизации филиалов")
         sys.exit(1)
     
-    branches = load_branches_from_csv(csv_path)
+    # Загрузка списка филиалов из Google Sheets
+    branches = load_branches_from_csv()
     if not branches:
         logger.error("❌ Не удалось загрузить список филиалов")
         sys.exit(1)
@@ -263,6 +267,28 @@ def main():
                 logger.info("✅ Telegram уведомления добавлены в очередь")
             except Exception as e:
                 logger.error(f"❌ Ошибка при добавлении уведомлений в очередь: {e}")
+            
+            # Очистка кэша API после добавления новых отзывов
+            logger.info("\n🔄 Очистка кэша API...")
+            try:
+                # Очистка Redis кэша
+                cache = get_cache_manager()
+                if cache.is_available():
+                    cache.invalidate_all_cache()
+                    logger.info("✅ Redis кэш очищен")
+                
+                # Очистка API кэша через HTTP запрос
+                try:
+                    response = requests.post("http://127.0.0.1:8004/api/v1/cache/clear", timeout=5)
+                    if response.status_code == 200:
+                        logger.info("✅ API кэш очищен")
+                    else:
+                        logger.warning(f"⚠️ Не удалось очистить API кэш: {response.status_code}")
+                except requests.RequestException as e:
+                    logger.warning(f"⚠️ Не удалось подключиться к API для очистки кэша: {e}")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при очистке кэша: {e}")
         else:
             logger.info("\n📱 Новых отзывов нет, уведомления не требуются")
         

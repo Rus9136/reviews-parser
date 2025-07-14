@@ -2,9 +2,12 @@
 """
 Telegram Bot для уведомлений о новых отзывах
 """
+import os
+# Установка timezone перед импортом других модулей
+os.environ.setdefault('TZ', 'UTC')
+
 import asyncio
 import logging
-import os
 import csv
 import time
 from datetime import datetime, timedelta
@@ -21,6 +24,7 @@ from dotenv import load_dotenv
 
 from database import SessionLocal, TelegramUser, TelegramSubscription, TelegramUserState, Review, Branch
 from telegram_calendar import create_calendar, process_calendar_selection
+from telegram_analytics import generate_analytics_report
 
 # Настройка логирования
 logging.basicConfig(
@@ -144,6 +148,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
         
         if has_subscriptions:
             keyboard.append([InlineKeyboardButton("📊 Просмотр отзывов", callback_data="menu_reviews")])
+            keyboard.append([InlineKeyboardButton("📈 Статистика и аналитика", callback_data="menu_analytics")])
             keyboard.append([InlineKeyboardButton("📝 Управление подписками", callback_data="menu_subscriptions")])
         else:
             keyboard.append([InlineKeyboardButton("🔔 Подписаться на уведомления", callback_data="menu_subscribe")])
@@ -371,6 +376,142 @@ async def show_reviews_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close()
 
+async def show_analytics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать меню аналитики"""
+    user_id = str(update.effective_user.id)
+    
+    db = get_db()
+    try:
+        subscriptions = db.query(TelegramSubscription).filter(
+            and_(
+                TelegramSubscription.user_id == user_id,
+                TelegramSubscription.is_active == True
+            )
+        ).all()
+        
+        if not subscriptions:
+            await update.callback_query.edit_message_text(
+                "❌ У вас нет активных подписок.\n\n"
+                "Для просмотра аналитики сначала подпишитесь на филиалы.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔔 Подписаться", callback_data="menu_subscribe")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
+                ])
+            )
+            return
+        
+        # Если только одна подписка, сразу переходим к выбору дат
+        if len(subscriptions) == 1:
+            branch_id = subscriptions[0].branch_id
+            branch_name = subscriptions[0].branch_name
+            
+            state_data = {
+                'action': 'analytics',
+                'selected_branch_id': branch_id,
+                'selected_branch_name': branch_name,
+                'step': 'date_from'
+            }
+            save_user_state(db, user_id, state_data)
+            
+            # Создать календарь для выбора даты начала
+            today = datetime.now()
+            calendar = create_calendar(today.year, today.month)
+            await update.callback_query.edit_message_text(
+                f"📈 Аналитика для филиала: {branch_name}\n\n"
+                f"📅 Выберите дату начала периода для анализа:",
+                reply_markup=calendar
+            )
+            
+        else:
+            # Создать клавиатуру с филиалами
+            keyboard = []
+            for sub in subscriptions:
+                keyboard.append([InlineKeyboardButton(
+                    text=sub.branch_name,
+                    callback_data=f"analytics_{sub.branch_id}"
+                )])
+            
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="main_menu")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.callback_query.edit_message_text(
+                "📈 Выберите филиал для просмотра аналитики:",
+                reply_markup=reply_markup
+            )
+    
+    finally:
+        db.close()
+
+async def show_analytics_for_period(update_or_query, context: ContextTypes.DEFAULT_TYPE):
+    """Показать аналитику за период"""
+    if hasattr(update_or_query, 'effective_user'):
+        user_id = str(update_or_query.effective_user.id)
+        is_callback = False
+    else:
+        user_id = str(update_or_query.from_user.id)
+        is_callback = True
+    
+    db = get_db()
+    try:
+        user_state = get_user_state(db, user_id)
+        
+        if not user_state:
+            return
+        
+        branch_id = user_state['selected_branch_id']
+        branch_name = user_state['selected_branch_name']
+        date_from = datetime.fromisoformat(user_state['date_from'])
+        date_to = datetime.fromisoformat(user_state['date_to'])
+        
+        # Генерация отчета
+        try:
+            report = generate_analytics_report(db, branch_id, branch_name, date_from, date_to)
+            
+            # Отправка текстовой сводки (всегда как новое сообщение)
+            await update_or_query.message.reply_text(report['summary_text'])
+            
+            # Отправка графиков
+            charts_info = [
+                (report['rating_chart'], "📈 График динамики рейтинга"),
+                (report['count_chart'], "📊 График количества отзывов"),
+                (report['distribution_chart'], "🥧 Распределение отзывов по оценкам")
+            ]
+            
+            for chart_path, chart_title in charts_info:
+                try:
+                    with open(chart_path, 'rb') as photo:
+                        await update_or_query.message.reply_photo(photo=photo, caption=chart_title)
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке графика {chart_title}: {e}")
+            
+            # Отправка кнопки возврата
+            keyboard = [[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update_or_query.message.reply_text(
+                "📊 Анализ завершен!",
+                reply_markup=reply_markup
+            )
+            
+            # Очистка временных файлов
+            from telegram_analytics import TelegramAnalytics
+            analytics = TelegramAnalytics(db)
+            analytics.cleanup_temp_files(report['temp_files'])
+            
+        except Exception as e:
+            logger.error(f"Ошибка при генерации аналитики: {e}")
+            await update_or_query.message.reply_text(
+                f"❌ Ошибка при генерации аналитики: {str(e)}\n\n"
+                "Попробуйте выбрать другой период или обратитесь к администратору."
+            )
+        
+        # Очистить состояние
+        clear_user_state(db, user_id)
+    
+    finally:
+        db.close()
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на кнопки"""
     query = update.callback_query
@@ -392,7 +533,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             user_state = get_user_state(db, user_id)
-            if not user_state or user_state.get('action') != 'reviews':
+            if not user_state or user_state.get('action') not in ['reviews', 'analytics']:
                 await query.edit_message_text("❌ Сессия истекла. Используйте /start для начала.")
                 return
             
@@ -413,18 +554,32 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 branch_name = user_state.get('selected_branch_name', '')
                 
                 if user_state.get('step') == 'date_from':
-                    await query.edit_message_text(
-                        f"📅 Выбран филиал: {branch_name}\n\n"
-                        f"Выберите дату начала периода:",
-                        reply_markup=calendar
-                    )
+                    if user_state.get('action') == 'analytics':
+                        await query.edit_message_text(
+                            f"📈 Аналитика для филиала: {branch_name}\n\n"
+                            f"📅 Выберите дату начала периода для анализа:",
+                            reply_markup=calendar
+                        )
+                    else:
+                        await query.edit_message_text(
+                            f"📅 Выбран филиал: {branch_name}\n\n"
+                            f"Выберите дату начала периода:",
+                            reply_markup=calendar
+                        )
                 elif user_state.get('step') == 'date_to':
                     date_from = datetime.fromisoformat(user_state['date_from']).date()
-                    await query.edit_message_text(
-                        f"📅 Дата начала: {date_from.strftime('%d.%m.%Y')}\n\n"
-                        f"Теперь выберите дату окончания периода:",
-                        reply_markup=calendar
-                    )
+                    if user_state.get('action') == 'analytics':
+                        await query.edit_message_text(
+                            f"📈 Дата начала: {date_from.strftime('%d.%m.%Y')}\n\n"
+                            f"📅 Теперь выберите дату окончания периода для анализа:",
+                            reply_markup=calendar
+                        )
+                    else:
+                        await query.edit_message_text(
+                            f"📅 Дата начала: {date_from.strftime('%d.%m.%Y')}\n\n"
+                            f"Теперь выберите дату окончания периода:",
+                            reply_markup=calendar
+                        )
                 return
             
             elif action == 'day':
@@ -439,11 +594,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     # Показать календарь для выбора даты окончания
                     calendar = create_calendar(selected_date.year, selected_date.month)
-                    await query.edit_message_text(
-                        f"📅 Дата начала: {selected_date.strftime('%d.%m.%Y')}\n\n"
-                        f"Теперь выберите дату окончания периода:",
-                        reply_markup=calendar
-                    )
+                    if user_state.get('action') == 'analytics':
+                        await query.edit_message_text(
+                            f"📈 Дата начала: {selected_date.strftime('%d.%m.%Y')}\n\n"
+                            f"📅 Теперь выберите дату окончания периода для анализа:",
+                            reply_markup=calendar
+                        )
+                    else:
+                        await query.edit_message_text(
+                            f"📅 Дата начала: {selected_date.strftime('%d.%m.%Y')}\n\n"
+                            f"Теперь выберите дату окончания периода:",
+                            reply_markup=calendar
+                        )
                     return
                     
                 elif user_state.get('step') == 'date_to':
@@ -463,12 +625,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return
                     
                     user_state['date_to'] = date_to.isoformat()
-                    user_state['step'] = 'show_reviews'
-                    user_state['offset'] = 0
-                    save_user_state(db, user_id, user_state)
-                    
-                    # Показать отзывы
-                    await show_reviews_for_period(query, context)
+                    if user_state.get('action') == 'analytics':
+                        user_state['step'] = 'show_analytics'
+                        save_user_state(db, user_id, user_state)
+                        
+                        # Сразу закрыть календарь и показать промежуточное сообщение
+                        await query.edit_message_text(
+                            f"⏳ Формируем отчёт...\n\n"
+                            f"Пожалуйста, подождите, идет построение статистики за период "
+                            f"{date_from.strftime('%d.%m.%Y')} - {date_to.strftime('%d.%m.%Y')}."
+                        )
+                        
+                        # Показать аналитику
+                        await show_analytics_for_period(query, context)
+                    else:
+                        user_state['step'] = 'show_reviews'
+                        user_state['offset'] = 0
+                        save_user_state(db, user_id, user_state)
+                        
+                        # Показать отзывы
+                        await show_reviews_for_period(query, context)
                     return
         
         # Обработка команд главного меню
@@ -484,6 +660,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "menu_reviews":
             await show_reviews_menu(update, context)
             return
+        elif data == "menu_analytics":
+            await show_analytics_menu(update, context)
+            return
         elif data == "menu_help":
             await query.edit_message_text(
                 "ℹ️ Справка по боту\n\n"
@@ -493,6 +672,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📊 Просмотр отзывов:\n"
                 "• Просмотр отзывов за выбранный период\n"
                 "• Отзывы отображаются по 5 штук\n\n"
+                "📈 Статистика и аналитика:\n"
+                "• Графики динамики рейтинга и количества отзывов\n"
+                "• Распределение отзывов по оценкам\n"
+                "• Сравнение с предыдущими периодами\n\n"
                 "📝 Управление подписками:\n"
                 "• Добавление новых подписок\n"
                 "• Отписка от всех уведомлений\n\n"
@@ -551,7 +734,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # Для команд, которые требуют состояние пользователя
-        if data.startswith("toggle_branch_") or data.startswith("reviews_") or data == "show_more_reviews" or data == "confirm_selection" or data == "select_all_branches" or data == "unselect_all_branches":
+        if data.startswith("toggle_branch_") or data.startswith("reviews_") or data.startswith("analytics_") or data == "show_more_reviews" or data == "confirm_selection" or data == "select_all_branches" or data == "unselect_all_branches":
             user_state = get_user_state(db, user_id)
             
             if not user_state:
@@ -577,8 +760,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         await query.edit_message_text("❌ Ошибка загрузки данных. Используйте /start для начала.")
                         return
-                elif data.startswith("reviews_"):
-                    # Для команды выбора филиала для просмотра отзывов
+                elif data.startswith("reviews_") or data.startswith("analytics_"):
+                    # Для команды выбора филиала для просмотра отзывов/аналитики
                     # Не требует предварительного состояния, создаем новое
                     pass  # Обработается ниже
                 else:
@@ -734,6 +917,46 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ])
                 )
         
+        elif data.startswith("analytics_"):
+            # Выбрать филиал для просмотра аналитики
+            branch_id = data.replace("analytics_", "")
+            
+            # Получить название филиала из подписок
+            subscription = db.query(TelegramSubscription).filter(
+                and_(
+                    TelegramSubscription.user_id == user_id,
+                    TelegramSubscription.branch_id == branch_id,
+                    TelegramSubscription.is_active == True
+                )
+            ).first()
+            
+            if subscription:
+                branch_name = subscription.branch_name
+                
+                state_data = {
+                    'action': 'analytics',
+                    'selected_branch_id': branch_id,
+                    'selected_branch_name': branch_name,
+                    'step': 'date_from'
+                }
+                save_user_state(db, user_id, state_data)
+                
+                # Создать календарь для выбора даты начала
+                today = datetime.now()
+                calendar = create_calendar(today.year, today.month)
+                await query.edit_message_text(
+                    f"📈 Аналитика для филиала: {branch_name}\n\n"
+                    f"📅 Выберите дату начала периода для анализа:",
+                    reply_markup=calendar
+                )
+            else:
+                await query.edit_message_text(
+                    "❌ Филиал не найден. Вернитесь в главное меню.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+                    ])
+                )
+        
         elif data == "show_more_reviews":
             # Показать еще отзывы
             if user_state and user_state.get('step') == 'show_reviews':
@@ -864,7 +1087,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
     
         # Обработка дат теперь через календарь, а не текстовые сообщения
-        if user_state.get('action') == 'reviews' and (user_state.get('step') == 'date_from' or user_state.get('step') == 'date_to'):
+        if user_state.get('action') in ['reviews', 'analytics'] and (user_state.get('step') == 'date_from' or user_state.get('step') == 'date_to'):
             # Игнорировать текстовые сообщения при выборе дат
             await update.message.reply_text(
                 "📅 Пожалуйста, используйте календарь для выбора даты.",
